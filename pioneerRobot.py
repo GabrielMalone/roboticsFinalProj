@@ -1,6 +1,8 @@
 # lets us talk to Coppelia Sim 
+# https://manual.coppeliarobotics.com/en/zmqRemoteApiOverview.htm
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 # python interface to OpenCV (Open Source Computer Vision Library)
+# https://docs.opencv.org/5.0/index.html
 import cv2
 # will use this to detect AprilTags
 # apples

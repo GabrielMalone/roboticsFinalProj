@@ -1,18 +1,33 @@
 from pioneerRobot import myRobot
+from aprilTagDetector import AprilTagDetector
 import cv2
 import time
-
+# --------------------------------------------------------------
 robot = myRobot()
-
+# --------------------------------------------------------------
 try: 
     robot.start()
     # give the camera a chance to get the image
     time.sleep(1)
-    image = robot.getCameraImage()
 
-    cv2.imshow("robot camera", image)
-    # stop sim with key 0
-    cv2.waitKey(0)
+    ATD = AprilTagDetector()
+
+
+    while True:
+        # image from CoppeliaSim
+        image = robot.getCameraImage()
+        # show in window
+        cv2.imshow("robot camera", image)
+
+        corners, ids = ATD.detect(image)
+        cv2.aruco.drawDetectedMarkers(image, corners, ids)
+
+        # give 30ms for a keyboard check
+        #  and check for 'q'
+        # with bitwise operation
+        if cv2.waitKey(30) & 0xFF == ord('q'):
+            break
+
 
 finally:
     robot.stop()

@@ -33,6 +33,7 @@ class myRobot():
         # get image from coppeliasim
         # resolution [256, 256]
         image, resolution = self.sim.getVisionSensorImg(self.camera)
+        # print("resolution: ", resolution)
         # coppeliasim sends the image as continuous sequence of bytes
         # 255, 0, 124, 0, 255, etc...
         # to turn this into an array of 8 byte units (0,255)
@@ -41,6 +42,8 @@ class myRobot():
         # reshape into a 3d array: 256x256 rows cols 
         # containing a 3 item array [r,g, b]
         image = image.reshape(resolution[1], resolution[0], 3)
+        # have to flip the image for some reason
+        image = cv2.flip(image, 0)
         # convert RGB to BGR for OpenCV (otherwise colors get swapped)
         return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     # ----------------------------------------------------------

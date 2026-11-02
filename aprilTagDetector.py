@@ -24,7 +24,7 @@ class AprilTagDetector:
             rejected,
             borderColor=(0, 0, 255)
         )
-
+        # let's see what the detector sees
         cv2.imwrite("rejectedMarkers.png", image)
 
         return corners, ids

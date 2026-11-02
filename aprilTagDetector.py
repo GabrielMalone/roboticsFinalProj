@@ -16,15 +16,14 @@ class AprilTagDetector:
         # we will have it look at what our robot cmaera can see
         corners, ids, rejected = self.detector.detectMarkers(image)
 
-        print("Detected:", ids)
-        print("Rejected candidates:", len(rejected))
+        # corners comes out looking like this 
+        # which is an array of april tags (each made up of an array of corners):
 
-        cv2.aruco.drawDetectedMarkers(
-            image,
-            rejected,
-            borderColor=(0, 0, 255)
-        )
-        # let's see what the detector sees
-        cv2.imwrite("rejectedMarkers.png", image)
+        # Detected: (array([[[185., 341.],
+        # [291., 341.],
+        # [320., 360.],
+        # [219., 359.]]], dtype=float32),)
+
 
         return corners, ids
+     # ----------------------------------------------------------

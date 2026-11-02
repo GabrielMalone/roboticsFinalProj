@@ -13,7 +13,7 @@ try:
     ATD = AprilTagDetector()
     # give the robot the April Tag Detector
     robot.runSelf(ATD)
-
+    
 finally:
     robot.stop()
     cv2.destroyAllWindows()

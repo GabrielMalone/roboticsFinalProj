@@ -16,35 +16,35 @@ class myRobot():
     # ----------------------------------------------------------
     def __init__(self):
         # connect to CoppeliaSim
-        self.client = RemoteAPIClient()
-        # requeset access to the sim api and its methods (startSim, stopSim, etc)
-        self.sim = self.client.require('sim')
+        self.client         = RemoteAPIClient()
+        # requeset access to the sim api and its methods 
+        self.sim            = self.client.require('sim')
         # get robot components
-        self.robot = self.sim.getObject('/PioneerP3DX')
-        self.camera = self.sim.getObject('/PioneerP3DX/visionSensor')
-        self.left_motor = self.sim.getObject('/PioneerP3DX/leftMotor')
-        self.right_motor = self.sim.getObject('/PioneerP3DX/rightMotor')
-        self.wheel_radius = self.getWheelRadius()
-        
-        self.L = self.getWheelLength()
-        self.heading_gain = 1.0
+        self.robot          = self.sim.getObject('/PioneerP3DX')
+        self.camera         = self.sim.getObject('/PioneerP3DX/visionSensor')
+        # driving stuff
+        self.left_motor     = self.sim.getObject('/PioneerP3DX/leftMotor')
+        self.right_motor    = self.sim.getObject('/PioneerP3DX/rightMotor')
+        self.wheel_radius   = self.getWheelRadius()
+        self.L              = self.getWheelLength()
+        self.heading_gain   = 1.0
     # ---------------------------------------------------------- 
     def start(self):
         self.sim.startSimulation()
     # ----------------------------------------------------------
     def getWheelRadius(self):
-        wheel = self.sim.getObject('/PioneerP3DX/rightMotor/rightWheel')
-        minX = self.sim.getObjectFloatParam(
+        wheel    = self.sim.getObject('/PioneerP3DX/rightMotor/rightWheel')
+        minX     = self.sim.getObjectFloatParam(
             wheel, self.sim.objfloatparam_objbbox_min_x
         )
-        maxX = self.sim.getObjectFloatParam(
+        maxX     = self.sim.getObjectFloatParam(
             wheel, self.sim.objfloatparam_objbbox_max_x
         )
         return (maxX - minX) / 2
     # ----------------------------------------------------------
     def getWheelLength(self):
-        leftPos = self.sim.getObjectPosition(self.left_motor, self.sim.handle_world)
-        rightPos = self.sim.getObjectPosition(self.right_motor, self.sim.handle_world)
+        leftPos     = self.sim.getObjectPosition(self.left_motor, self.sim.handle_world)
+        rightPos    = self.sim.getObjectPosition(self.right_motor, self.sim.handle_world)
         # euclidean distance
         return np.linalg.norm(np.array(leftPos) - np.array(rightPos))
     # ----------------------------------------------------------
@@ -54,16 +54,15 @@ class myRobot():
     def moveSelf(self, v, heading_error):
 
         omega = self.heading_gain * heading_error
-
         # move forward while steering
         # convert forward and angular velocity into wheel velocities
         # v = wr and L/2 = r for turning angular into forward v
-        left_velocity = v - ( omega * (self.L / 2) ) 
-        right_velocity = v + ( omega * (self.L / 2) )
+        left_velocity   = v - ( omega * (self.L / 2) ) 
+        right_velocity  = v + ( omega * (self.L / 2) )
         # Convert linear wheel velocities into radians/second
         # just rearranging previous equation : w = v/r
-        phi_hat_left = left_velocity / self.wheel_radius
-        phi_hat_right = right_velocity / self.wheel_radius
+        phi_hat_left    = left_velocity / self.wheel_radius
+        phi_hat_right   = right_velocity / self.wheel_radius
         # Send commands to CoppeliaSim
         self.sim.setJointTargetVelocity(self.left_motor, phi_hat_left)
         self.sim.setJointTargetVelocity(self.right_motor, phi_hat_right)

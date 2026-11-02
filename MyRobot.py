@@ -51,14 +51,9 @@ class myRobot():
     def stop(self):
         self.sim.stopSimulation()
     # ----------------------------------------------------------
-    def moveSelf(self, heading_error, stop = False):
+    def moveSelf(self, v, heading_error):
 
         omega = self.heading_gain * heading_error
-        v = 0.2
-
-        if stop:
-            omega = 0
-            v = 0
 
         # move forward while steering
         # convert forward and angular velocity into wheel velocities
@@ -157,20 +152,18 @@ class myRobot():
                 # keep moving towards it
                 # tagsize of 150-200 seems decent
                 if self.tagWidth(corners) < 200:
-                    self.moveSelf(heading_error)
+                    self.moveSelf(v=0.2, heading_error=heading_error)
                 else:
-                    self.moveSelf(heading_error, stop=True)
+                    self.moveSelf(v=0, heading_error=0)
 
+            # otherwise spin in a circle
+            else:
+                self.moveSelf(v=0, heading_error=0.2)
+                
             # for visualization in the sim
             image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
             cv2.imshow("robot camera", cv2.flip(image, 0))
       
-            if ids:
-                # move toward id
-                pass
-            else:
-                # rotate 360 
-                pass
 
             # give 30ms for a keyboard check
             # and check for 'q' to quit

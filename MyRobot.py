@@ -28,6 +28,22 @@ class myRobot():
         self.wheel_radius   = self.getWheelRadius()
         self.L              = self.getWheelLength()
         self.heading_gain   = 1.0
+        self.angular_gain   = 1.2
+
+        self.april_tag_reached = False
+
+
+        # actually the x and y top corner 
+        # length of april tag in pixels
+        self.min_distance_to_april_tag = 200
+
+        # get the 16 ultrasonic sensors
+        self.usensors = []
+        for i in range(16):
+            sensor = self.sim.getObject(
+                f"/PioneerP3DX/ultrasonicSensor[{i}]"
+            )
+            self.usensors.append(sensor)
     # ---------------------------------------------------------- 
     def start(self):
         self.sim.startSimulation()
@@ -54,6 +70,9 @@ class myRobot():
     def moveSelf(self, v, heading_error):
 
         omega = self.heading_gain * heading_error
+        # Limit angular velocity
+        omega = np.clip(omega, -0.15, 0.15)
+
         # move forward while steering
         # convert forward and angular velocity into wheel velocities
         # v = wr and L/2 = r for turning angular into forward v
@@ -80,8 +99,8 @@ class myRobot():
         # reshape into a 3d array: 256x256 rows cols 
         # containing a 3 item array [r,g, b]
         image = image.reshape(resolution[1], resolution[0], 3)
-        # have to flip the image for some reason
-        image = cv2.flip(image, 0)
+        # have to flip the image for some reason (and sometimes not?!)
+        # image = cv2.flip(image, 0)
         # convert RGB to BGR for OpenCV (otherwise colors get swapped)
         return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     # ----------------------------------------------------------
@@ -131,8 +150,17 @@ class myRobot():
         headingError = (tagCenterX - imageCenterX) / imageCenterX  
 
         return headingError  
-    
-    # ---------------------------------------------------------z
+    # ---------------------------------------------------------
+    def readUltrasonicSensors(self):
+        # looks like we are about 0.68 meters away 
+        # from tree when finish approaching april tag
+        for i, sensor in enumerate(self.usensors): 
+            result, distance, _, _, _ = (
+                self.sim.readProximitySensor(sensor)
+            )
+            if result:
+                print(f"Sensor {i}: {distance:.2f} m")
+    # ---------------------------------------------------------
     def runSelf(self, ATD):
         # run camera continuously
         while True:
@@ -144,24 +172,28 @@ class myRobot():
             corners, ids = ATD.detect(image)
 
             # if april tag detected move towards it
-            if (corners):
+            if (corners and not self.april_tag_reached):
                 tagCenterX= self.detectAprilTagCenter(corners)
                 heading_error = self.detectAprilTagHeadingError(tagCenterX, image)
                 # if the april tag is not very larg in camera, 
                 # keep moving towards it
                 # tagsize of 150-200 seems decent
                 if self.tagWidth(corners) < 200:
+                    print("tag widh: ", self.tagWidth(corners))
                     self.moveSelf(v=0.2, heading_error=heading_error)
                 else:
+                    # stop
+                    self.april_tag_reached = True
+                    print("APRIL TAG REACHED")
                     self.moveSelf(v=0, heading_error=0)
 
             # otherwise spin in a circle
-            else:
+            elif not self.april_tag_reached:
                 self.moveSelf(v=0, heading_error=0.2)
                 
             # for visualization in the sim
             image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
-            cv2.imshow("robot camera", cv2.flip(image, 0))
+            cv2.imshow("robot camera", image)
       
 
             # give 30ms for a keyboard check

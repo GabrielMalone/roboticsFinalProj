@@ -164,14 +164,18 @@ class myRobot():
     def runSelf(self, ATD):
         # run camera continuously
         while True:
-
+            # --------------------------------------------------
             # image from CoppeliaSim
+            # --------------------------------------------------
             image = self.getCameraImage()
-  
             # any april tags in view?
             corners, ids = ATD.detect(image)
-
+            # for visualization in the sim
+            image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
+            cv2.imshow("robot camera", image)
+            # --------------------------------------------------
             # if april tag detected move towards it
+            # --------------------------------------------------
             if (corners and not self.april_tag_reached):
                 tagCenterX= self.detectAprilTagCenter(corners)
                 heading_error = self.detectAprilTagHeadingError(tagCenterX, image)
@@ -186,16 +190,20 @@ class myRobot():
                     self.april_tag_reached = True
                     print("APRIL TAG REACHED")
                     self.moveSelf(v=0, heading_error=0)
-
+            # --------------------------------------------------
             # otherwise spin in a circle
+            # and look for tag
+            # --------------------------------------------------
             elif not self.april_tag_reached:
                 self.moveSelf(v=0, heading_error=0.2)
-                
-            # for visualization in the sim
-            image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
-            cv2.imshow("robot camera", image)
-      
-
+            # --------------------------------------------------
+            # now move around tree
+            # --------------------------------------------------
+            if (self.april_tag_reached):
+                self.readUltrasonicSensors()
+            # --------------------------------------------------
+            # keyborad input stuff
+            # --------------------------------------------------
             # give 30ms for a keyboard check
             # and check for 'q' to quit
             # with bitwise operation

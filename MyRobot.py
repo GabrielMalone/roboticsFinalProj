@@ -31,7 +31,7 @@ class myRobot():
         self.angular_gain   = 1.2
 
         self.april_tag_reached = False
-
+        self.target_distance_to_tree = 0.5
 
         # actually the x and y top corner 
         # length of april tag in pixels
@@ -151,15 +151,39 @@ class myRobot():
 
         return headingError  
     # ---------------------------------------------------------
-    def readUltrasonicSensors(self):
+    def readUltrasonicSensors(self, side=""):
         # looks like we are about 0.68 meters away 
         # from tree when finish approaching april tag
+
+        if side == "right":
+            # _, not using the last three values returned
+            # sensors 6 and 7 are the right side sensors
+            # first value r1 just a boolean yes / no somehting detected
+            # second d1 is how far away detected object is
+            r1, d1, *_ = self.sim.readProximitySensor(self.usensors[5])
+            r2, d2, *_ = self.sim.readProximitySensor(self.usensors[6])
+            return [(r1, d1),(r2,d2)]
+        
         for i, sensor in enumerate(self.usensors): 
-            result, distance, _, _, _ = (
+            result, distance, *_ = (
                 self.sim.readProximitySensor(sensor)
             )
             if result:
                 print(f"Sensor {i}: {distance:.2f} m")
+    # ---------------------------------------------------------
+    def getRightDistance(self):
+        readings = self.readUltrasonicSensors("right")
+        # some list comprehension
+        distances = [
+            distance
+            for detected, distance in readings
+            if detected
+        ]
+        # nothing on the right sensors
+        if not distances:
+            return None
+        # whichever is closest is more valuable info
+        return min(distances)
     # ---------------------------------------------------------
     def runSelf(self, ATD):
         # run camera continuously
@@ -200,7 +224,12 @@ class myRobot():
             # now move around tree
             # --------------------------------------------------
             if (self.april_tag_reached):
-                self.readUltrasonicSensors()
+                # turn robot to it's right side 
+                # and stop when right side sensor
+                # detects tree 
+                self.moveSelf(v=0, heading_error=0.2)
+                right_side_distances = self.getRightDistance()
+                print(right_side_distances)
             # --------------------------------------------------
             # keyborad input stuff
             # --------------------------------------------------

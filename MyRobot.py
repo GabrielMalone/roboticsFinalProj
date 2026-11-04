@@ -9,6 +9,7 @@ import cv2
 # track bojects
 # estimate object positions
 import numpy as np
+import math
 # --------------------------------------------------------------
 # apple finding robot --- hopefully
 # --------------------------------------------------------------
@@ -29,13 +30,24 @@ class myRobot():
         self.L              = self.getWheelLength()
         self.heading_gain   = 1.0
         self.angular_gain   = 1.2
+        # tree calibration stuff
+        self.bestDifference = float("inf")
+        self.bestHeading = None
+        self.treeScanComplete = False
+        self.treeAligned = False
+        self.scanStartHeading = None
+        self.previousScanHeading = None
+        self.scanRotation = 0.0
+        self.lastTreeOmega = -0.12
 
+        # other flags
         self.april_tag_reached = False
-        self.target_distance_to_tree = 0.5
+        self.moving_around_tree = False
+        self.target_distance_to_tree = None
 
         # actually the x and y top corner 
         # length of april tag in pixels
-        self.min_distance_to_april_tag = 200
+        self.min_distance_to_april_tag = 250
 
         # get the 16 ultrasonic sensors
         self.usensors = []
@@ -47,6 +59,17 @@ class myRobot():
     # ---------------------------------------------------------- 
     def start(self):
         self.sim.startSimulation()
+    # ----------------------------------------------------------
+    def getTreeRadius(self):
+        tree = self.sim.getObject('/Tree')
+        minX = self.sim.getObjectFloatParam(
+            tree, self.sim.objfloatparam_objbbox_min_x
+        )
+        maxX = self.sim.getObjectFloatParam(
+            tree, self.sim.objfloatparam_objbbox_max_x
+        )
+        treeRadius = (maxX - minX) / 2
+        return treeRadius
     # ----------------------------------------------------------
     def getWheelRadius(self):
         wheel    = self.sim.getObject('/PioneerP3DX/rightMotor/rightWheel')
@@ -70,9 +93,11 @@ class myRobot():
     def moveSelf(self, v, heading_error):
 
         omega = self.heading_gain * heading_error
-        # Limit angular velocity
-        omega = np.clip(omega, -0.15, 0.15)
 
+        if (self.moving_around_tree):
+            # Clamps the value to the specified range
+            omega = heading_error
+            
         # move forward while steering
         # convert forward and angular velocity into wheel velocities
         # v = wr and L/2 = r for turning angular into forward v
@@ -160,8 +185,8 @@ class myRobot():
             # sensors 6 and 7 are the right side sensors
             # first value r1 just a boolean yes / no somehting detected
             # second d1 is how far away detected object is
-            r1, d1, *_ = self.sim.readProximitySensor(self.usensors[5])
-            r2, d2, *_ = self.sim.readProximitySensor(self.usensors[6])
+            r1, d1, *_ = self.sim.readProximitySensor(self.usensors[7])
+            r2, d2, *_ = self.sim.readProximitySensor(self.usensors[8])
             return [(r1, d1),(r2,d2)]
         
         for i, sensor in enumerate(self.usensors): 
@@ -185,6 +210,136 @@ class myRobot():
         # whichever is closest is more valuable info
         return min(distances)
     # ---------------------------------------------------------
+    def moveTowardsAprilTag(self, corners, image):
+        tagCenterX= self.detectAprilTagCenter(corners)
+        heading_error = self.detectAprilTagHeadingError(tagCenterX, image)
+        # if the april tag is not very larg in camera, 
+        # keep moving towards it
+        # tagsize of 150-200 seems decent
+        if self.tagWidth(corners) < self.min_distance_to_april_tag:
+            print("tag widh: ", self.tagWidth(corners))
+            self.moveSelf(v=0.2, heading_error=heading_error)
+        else:
+            # stop
+            self.april_tag_reached = True
+            print("APRIL TAG REACHED")
+            self.moveSelf(v=0, heading_error=0)
+    # ---------------------------------------------------------
+    # idea here is that we get close to tree with april tag
+    # then we do a 360 spin to see which heading the robot 
+    # is most perpendicular to the tree at, using the ultrasonic
+    # ---------------------------------------------------------
+    def calibrateRobotTangentToTree(self):
+
+        # where we at right now?
+        currentHeading = self.sim.getObjectOrientation(
+            self.robot, -1
+        )[2]
+
+        if self.previousScanHeading is None:
+            self.previousScanHeading = currentHeading
+
+        # step 1: complete one full rotation
+        if not self.treeScanComplete:
+            # just move slowly 
+            self.moveSelf(v=0, heading_error=0.2)
+            # this records/tracks best heading 
+            self.scanTreeAlignment()
+
+            # since we are trying to record one robot rotation
+            # use atan2 to account for wrapping around pi
+            # so we dont accidentally think we made a big rotation
+            # when we simply crossed a +/- pi boundary
+
+            # tells us the angle pointing towards the points we pass in
+            delta = math.atan2(
+                # vertical coord (y) from radians
+                math.sin(currentHeading - self.previousScanHeading),
+                # horizontal coord (x) from randians
+                math.cos(currentHeading - self.previousScanHeading)
+            )
+            self.scanRotation += abs(delta)
+            print(f"calibrating tree...{(self.scanRotation/ (2 * math.pi) * 100)}% complete")
+            # update for next round
+            self.previousScanHeading = currentHeading
+
+            if self.scanRotation >= 2 * math.pi:
+                self.treeScanComplete = True
+                # scan done, stop
+                self.moveSelf(v=0, heading_error=0)
+                print("SCAN COMPLETE")
+                print("Best heading:", self.bestHeading)
+
+        # step 2, move robot into the best heading position
+        elif self.bestHeading is not None:
+            
+            headingError = math.atan2(
+                math.sin(self.bestHeading - currentHeading),
+                math.cos(self.bestHeading - currentHeading)
+            )
+            # if in position
+            if abs(headingError) < 0.02:
+                self.moveSelf(v=0, heading_error=0)
+                self.treeAligned = True
+                print("TREE ALIGNMENT COMPLETE")
+            # otherwise rotate towards best heading
+            else:
+                self.moveSelf(v=0, heading_error=headingError)
+
+    # ---------------------------------------------------------
+    # are we perpendicular or not?
+    # ---------------------------------------------------------
+    def scanTreeAlignment(self):
+        sensors = self.readUltrasonicSensors("right")
+
+        detected7, distance7 = sensors[0]
+        detected8, distance8 = sensors[1]
+
+        if detected7 and detected8:
+            # distance measurement differences 
+            # between right side detectors
+            difference = abs(distance7 - distance8)
+            # we are looking for similar distances
+            # since that should indicated perpendicularity
+            if difference < self.bestDifference:
+                self.bestDifference = difference
+                # record the heading of the robot when perpendicular
+                self.bestHeading = self.sim.getObjectOrientation(
+                    self.robot, -1
+                )[2]
+                print(
+                    f"Best alignment: {difference:.4f} m | "
+                    f"Heading: {self.bestHeading:.3f} rad"
+                )
+    # ---------------------------------------------------------
+    def moveAroundTree(self):
+        self.moving_around_tree = True
+
+        sensors = self.readUltrasonicSensors("right")
+
+        detected7, d7 = sensors[0]
+        detected8, d8 = sensors[1]
+
+        # Lost contact with tree
+        if not detected7 or not detected8:
+            print("LOST SENSOR CONTACT")
+            self.moveSelf(0.1, self.lastTreeOmega)
+            return
+
+        print("sensor data: ", d7, d8)
+
+        # compare front and rear distances
+        error = d7 - d8
+
+        # this will be our constant clockwise rotation
+        baseOmega = -0.12
+
+        # Correct robot orientation
+        omega = baseOmega - self.angular_gain * error
+        self.lastTreeOmega = omega
+
+        self.moveSelf(v=0.1, heading_error=omega)
+    # ---------------------------------------------------------
     def runSelf(self, ATD):
         # run camera continuously
         while True:
@@ -196,40 +351,29 @@ class myRobot():
             corners, ids = ATD.detect(image)
             # for visualization in the sim
             image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
-            cv2.imshow("robot camera", image)
+            cv2.imshow("robot camera", cv2.flip(image, 1))
             # --------------------------------------------------
             # if april tag detected move towards it
             # --------------------------------------------------
             if (corners and not self.april_tag_reached):
-                tagCenterX= self.detectAprilTagCenter(corners)
-                heading_error = self.detectAprilTagHeadingError(tagCenterX, image)
-                # if the april tag is not very larg in camera, 
-                # keep moving towards it
-                # tagsize of 150-200 seems decent
-                if self.tagWidth(corners) < 200:
-                    print("tag widh: ", self.tagWidth(corners))
-                    self.moveSelf(v=0.2, heading_error=heading_error)
-                else:
-                    # stop
-                    self.april_tag_reached = True
-                    print("APRIL TAG REACHED")
-                    self.moveSelf(v=0, heading_error=0)
+                self.moveTowardsAprilTag(corners, image)
             # --------------------------------------------------
             # otherwise spin in a circle
             # and look for tag
             # --------------------------------------------------
             elif not self.april_tag_reached:
+                print("just going in circles!")
                 self.moveSelf(v=0, heading_error=0.2)
             # --------------------------------------------------
-            # now move around tree
+            # tree / robot alignment 
             # --------------------------------------------------
-            if (self.april_tag_reached):
-                # turn robot to it's right side 
-                # and stop when right side sensor
-                # detects tree 
-                self.moveSelf(v=0, heading_error=0.2)
-                right_side_distances = self.getRightDistance()
-                print(right_side_distances)
+            if self.april_tag_reached and not self.treeAligned:
+                self.calibrateRobotTangentToTree()
+            # --------------------------------------------------
+            # once aligned, we can move around the tree
+            # --------------------------------------------------
+            if self.treeAligned:
+                self.moveAroundTree()
             # --------------------------------------------------
             # keyborad input stuff
             # --------------------------------------------------

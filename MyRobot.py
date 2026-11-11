@@ -23,6 +23,8 @@ class myRobot():
         # get robot components
         self.robot          = self.sim.getObject('/PioneerP3DX')
         self.camera         = self.sim.getObject('/PioneerP3DX/visionSensor')
+
+
         # driving stuff
         self.left_motor     = self.sim.getObject('/PioneerP3DX/leftMotor')
         self.right_motor    = self.sim.getObject('/PioneerP3DX/rightMotor')
@@ -44,6 +46,7 @@ class myRobot():
         self.april_tag_reached = False
         self.moving_around_tree = False
         self.target_distance_to_tree = None
+        self.cameraTilted = False
 
         # actually the x and y top corner 
         # length of april tag in pixels
@@ -59,6 +62,71 @@ class myRobot():
     # ---------------------------------------------------------- 
     def start(self):
         self.sim.startSimulation()
+    # ----------------------------------------------------------
+    def runSelf(self, ATD):
+        # run camera continuously
+        while True:
+            # --------------------------------------------------
+            # image from CoppeliaSim
+            # --------------------------------------------------
+            image = self.getCameraImage()
+            # any april tags in view?
+            corners, ids = ATD.detect(image)
+            # for visualization in the sim
+            image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
+            # --------------------------------------------------
+            # if april tag detected move towards it
+            # --------------------------------------------------
+            if (corners and not self.april_tag_reached):
+                self.moveTowardsAprilTag(corners, image)
+            # --------------------------------------------------
+            # otherwise spin in a circle
+            # and look for tag
+            # --------------------------------------------------
+            elif not self.april_tag_reached:
+                print("just going in circles!")
+                self.moveSelf(v=0, heading_error=0.2)
+            # --------------------------------------------------
+            # tree / robot alignment 
+            # --------------------------------------------------
+            if self.april_tag_reached and not self.treeAligned:
+                self.calibrateRobotTangentToTree()
+            # --------------------------------------------------
+            # once aligned, we can move around the tree
+            # --------------------------------------------------
+            if self.treeAligned:
+                self.moveAroundTree()
+                if not self.cameraTilted:
+                    self.tiltCameraX(0)
+                    self.cameraTilted = True
+                boxCenter = self.detectMarker(image)
+                if boxCenter is not None:
+                    print(boxCenter)
+                    
+            cv2.imshow("robot camera", cv2.flip(image, 1))
+            # --------------------------------------------------
+            # keyborad input stuff
+            # --------------------------------------------------
+            # give 30ms for a keyboard check
+            # and check for 'q' to quit
+            # with bitwise operation
+            
+            if cv2.waitKey(30) & 0xFF == ord('q'):
+                break
+    # ----------------------------------------------------------
+    def tiltCameraX(self, degrees):
+        self.sim.setObjectOrientation(
+            self.camera,
+            self.robot,
+            [math.radians(degrees),0,0]
+        )
+    # ----------------------------------------------------------
+    def tiltCameraY(self, degrees):
+        self.sim.setObjectOrientation(
+            self.camera,
+            self.robot,
+            [0,math.radians(degrees),0]
+        )
     # ----------------------------------------------------------
     def getTreeRadius(self):
         tree = self.sim.getObject('/Tree')
@@ -340,51 +408,134 @@ class myRobot():
 
         self.moveSelf(v=0.1, heading_error=omega)
     # ---------------------------------------------------------
-    def runSelf(self, ATD):
-        # run camera continuously
-        while True:
-            # --------------------------------------------------
-            # image from CoppeliaSim
-            # --------------------------------------------------
-            image = self.getCameraImage()
-            # any april tags in view?
-            corners, ids = ATD.detect(image)
-            # for visualization in the sim
-            image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
-            cv2.imshow("robot camera", cv2.flip(image, 1))
-            # --------------------------------------------------
-            # if april tag detected move towards it
-            # --------------------------------------------------
-            if (corners and not self.april_tag_reached):
-                self.moveTowardsAprilTag(corners, image)
-            # --------------------------------------------------
-            # otherwise spin in a circle
-            # and look for tag
-            # --------------------------------------------------
-            elif not self.april_tag_reached:
-                print("just going in circles!")
-                self.moveSelf(v=0, heading_error=0.2)
-            # --------------------------------------------------
-            # tree / robot alignment 
-            # --------------------------------------------------
-            if self.april_tag_reached and not self.treeAligned:
-                self.calibrateRobotTangentToTree()
-            # --------------------------------------------------
-            # once aligned, we can move around the tree
-            # --------------------------------------------------
-            if self.treeAligned:
-                self.moveAroundTree()
-            # --------------------------------------------------
-            # keyborad input stuff
-            # --------------------------------------------------
-            # give 30ms for a keyboard check
-            # and check for 'q' to quit
-            # with bitwise operation
-            if cv2.waitKey(30) & 0xFF == ord('q'):
-                break
+    def transform(self, x, y, w, h, imgw, imgh):
+        # Goal: Normalize rectangle coordinates to -1 ... +1
+
+        # x and y represent the top left corner of the bounding box
+        # (x,y) of that edge
+        # centerX = x + w / 2
+        # centerY = y + h / 2
+
+        # but just knowing that the center of the box
+        # is at some pixel coordinate isnt very useful
+        # we want to normalize the coordinate 
+        # so we can generally say that the box 
+        # is to the the left or right of the robot etc
+
+        # so convert coordinates into a range from -1 to 1
+        # normalizedX = (centerX/imgw) <-- now x is between 0 and 1
+        # normalizedX *= 2 <-- now between 0 and 2
+        # normalizedX -= 1 <-- now between -1 and 1
+
+        centerX = x + w / 2
+        centerY = y + h / 2
+
+        normalXCenter = centerX/imgw * 2 - 1
+        normalYCenter = centerY/imgh * 2 - 1
+
+        return normalXCenter, normalYCenter
     # ----------------------------------------------------------
+    def detectMarker(self, frame):
+        """
+        Detect red markers in the image and return their
+        positions and sizes.
+        """
 
+        # Convert RGB to BGR, then HSV
+        # hsv allows for easier detection of specific colors
+        # regardless of lighting
+        hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
+        # Define red color ranges
+        # red falls on two ends of the HSV spectrum
+        red_ranges = [
+            (
+                # hue(color), saturation (vividness), value (intensity)
+                np.array([0, 100, 100]),
+                np.array([10, 255, 255])
+            ),
+            (
+                # so both ends of red 0-10, 168-180 at dim->bright
+                np.array([160, 100, 100]),
+                np.array([180, 255, 255])
+            )
+        ]
 
+        # Combine masks
+        # lower = that first  array 0
+        # upper = second array 10, etc
 
+        # pass in the hsv image created above
+        # Look at every pixel in hsv_image and tell me 
+        # whether its HSV values fall between lower and upper.
+        # summing to combine both ranges (if valid in one range, white represented)
 
+        # open cv in range returns 255 
+        # when true 0 when false (black and white)
+        # this loop runs twice
+        # one for each red range
+        # then sums each mask for one final mask
+        red_mask = sum(
+            cv2.inRange(hsv_image, lower, upper)
+            for lower, upper in red_ranges
+        )
+
+        # find the boundaries of the red regions
+        # we just found
+        contours, _ = cv2.findContours(
+            red_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        # contours = (
+        #     array_of_points_for_red_object_1,
+        #     array_of_points_for_red_object_2,
+        #     array_of_points_for_red_object_3
+        # )
+        # Each contour contains coordinates (x, y) 
+        # describing its outline.
+
+        if contours:
+            # imgh, w are dimensions of the camera output
+            imgh, imgw, imgc = frame.shape
+
+            # Find largest contour
+            # key tells max function how to calculate 
+            # the value being compared
+
+            # we assume the largest countour area
+            # is the box we are looking for
+            c = max(contours, key=cv2.contourArea)
+
+            # simplified shape of the contour
+            # we detected
+            x, y, w, h = cv2.boundingRect(c)
+
+            # Draw bounding rectangle
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2
+            )
+
+            # Draw arrow toward image center
+            cv2.arrowedLine(
+                frame,
+                (x + w // 2, y + h // 2),
+                (imgw // 2, imgh // 2),
+                (0, 0, 255),
+                2
+            )
+            # ok got this
+            # now the quodrotor knows
+            # where it needs to go to get 
+            # red box back into center
+            return self.transform(
+                x, y, w, h, imgw, imgh
+            )
+
+        return None
+    # ----------------------------------------------------------

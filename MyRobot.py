@@ -41,7 +41,14 @@ class myRobot():
         self.previousScanHeading = None
         self.scanRotation = 0.0
         self.lastTreeOmega = -0.12
-
+        # camera fov
+        self.fov = self.sim.getObjectFloatParam(
+            self.camera,
+            self.sim.visionfloatparam_perspective_angle
+            )
+        # ratio of sideways distance to forward distance
+        # at the edge of the camera's view
+        self.tanHalfFov = math.tan(self.fov/2)
         # other flags
         self.april_tag_reached = False
         self.moving_around_tree = False
@@ -102,6 +109,11 @@ class myRobot():
                 boxCenter = self.detectMarker(image)
                 if boxCenter is not None:
                     print(boxCenter)
+                    # next we need to find the apple's 
+                    # 3d vector from camera to apple
+                    # we need FOV of camera for this
+                    worldDirection = self.find3dVector(boxCenter)
+                    print(f"direction to apple: {worldDirection}")
                     
             cv2.imshow("robot camera", cv2.flip(image, 1))
             # --------------------------------------------------
@@ -113,6 +125,49 @@ class myRobot():
             
             if cv2.waitKey(30) & 0xFF == ord('q'):
                 break
+    # ----------------------------------------------------------
+    def find3dVector(self, boxCenter):
+        # The apple appears halfway between the center and right edge of my image (x=0.5).
+        # Since my camera has a 60° field of view,
+        # I know the right edge corresponds to a 30° angle from straight ahead.
+        # At a forward distance of 1 meter, that edge is 0.577 meters to the right.
+        # Since my apple is halfway toward that edge,
+        # its position would be 0.2887 meters to the right at that same forward distance.
+        x = boxCenter[0] * self.tanHalfFov
+        y = -boxCenter[1] * self.tanHalfFov
+        z = 1.0
+        # now we have a forward diretion vector
+        # pointing toward apple from camera
+        direction = np.array([x, y, z])
+        # unit vector pointing to apple from camera
+        direction = direction / np.linalg.norm(direction)
+
+        #get camera world rotation
+        # we need to extract the 3x3 rotation matrix
+        # from this
+
+        cameraMatrix = self.sim.getObjectMatrix(
+            self.camera,
+            self.sim.handle_world
+        )
+        matrix = np.array(cameraMatrix).reshape(3, 4)
+        #       ROTATION             POSITION
+        #    ┌─────────────────────┬──────────┐
+        #    │ R11    R12    R13   │    Tx    │
+        #    │ R21    R22    R23   │    Ty    │
+        #    │ R31    R32    R33   │    Tz    │
+        #    └─────────────────────┴──────────┘
+        rotation = matrix[:, :3]
+        #    ┌─────────────────────┐
+        #    │ R11    R12    R13   │
+        #    │ R21    R22    R23   │
+        #    │ R31    R32    R33   │
+        #    └─────────────────────┘
+        # @ = matrix multiplication in numpy
+        worldDirection = rotation @ direction
+        # so now we have a 3dvector pointing towards the apple
+        # and its coordinates are rotated to world space
+        return worldDirection
     # ----------------------------------------------------------
     def tiltCameraX(self, degrees):
         self.sim.setObjectOrientation(

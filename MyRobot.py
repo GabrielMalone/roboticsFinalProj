@@ -45,6 +45,7 @@ class myRobot():
         self.appleDiameter = self.appleRadius * 2
         # can track apple coordinates here
         self.applePositions = []
+        self.tempAppleReadings = []
         # camera stuff
         self.fov = self.sim.getObjectFloatParam(
             self.camera,
@@ -82,6 +83,7 @@ class myRobot():
                 f"/PioneerP3DX/ultrasonicSensor[{i}]"
             )
             self.usensors.append(sensor)
+    
     # ---------------------------------------------------------- 
     def start(self):
         self.sim.startSimulation()
@@ -129,30 +131,28 @@ class myRobot():
                 # --------------------------------------------------
                 detection = robotHelpers.detectMarker(self, image)
                 if detection is not None:
-                    cameraPosition = self.sim.getObjectPosition(
-                        self.camera,
-                        self.sim.handle_world
-                    )
-                    boxCenter, applePixelWidth = detection
-                    distance = robotHelpers.estimateAppleDistance(self, applePixelWidth)
-                    # next we need to find the apple's 
-                    # 3d vector from camera to apple
-                    # we need FOV of camera for this
+
+                    # kinect depth info
+                    boxCenter, applePixelWidth, (centerX, centerY) = detection
+                    # all the depth info the camera sees
+                    depthImage = robotHelpers.getCameraDepth(self)
+                    # depth at center of detected apple
+                    appleDepth = depthImage[centerY, centerX]
+                    # adjust for radius of typical apple
+                    appleDepth += self.appleRadius
+                    # apple out of view, not really detecting apple 
+                    if appleDepth > 2.0:
+                        return None
                     worldDirection, localDirection = robotHelpers.find3dVector(self, boxCenter)
-                    # we want to divide the foward distance to the apple from 
-                    # estimateAppleDistance by the Z (up) componenent of the local vector
-                    # that points from the camera to the apple 
-                    diagonalDistance = distance / localDirection[2]
-                    # next part gives us the displacement from the camera to the apple, in world coordinates.
-                    # Adding cameraPosition gives us the apple’s position in the world.
-                    appleWorldPosition = np.array(cameraPosition) + worldDirection * diagonalDistance
-                    print("Estimated apple position:", appleWorldPosition)      
-                    apple = self.sim.getObject('/Apple')
-                    actualPosition = self.sim.getObjectPosition(
-                        apple,
-                        self.sim.handle_world
-                    )
-                    print("Actual apple position:", actualPosition)
+                    # at this point have 3d position of apple relative to camera in meters 
+                    # just need to do a transformation from camera to robot then robot to world
+                    appleCamerPosition = robotHelpers.Position3DappleRelToCamera(appleDepth, localDirection)
+                    appleRobotPosition = robotHelpers.TransformApplePosFromCameraToRobot(self, appleCamerPosition)
+                    appleWorldPosition = robotHelpers.TransformAppleFromRobotToWorldPos(self, appleRobotPosition)
+                    #robotHelpers.compareEstimateToActual(self, appleWorldPosition)
+                    robotHelpers.mapApple(self, appleWorldPosition)
+
+                    print(self.applePositions)
         
             cv2.imshow("robot camera", cv2.flip(image, 1))
             # --------------------------------------------------

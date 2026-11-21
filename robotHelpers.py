@@ -316,6 +316,12 @@ def detectMarker(self, frame):
         # we detected
         x, y, w, h = cv2.boundingRect(c)
 
+        margin = 10
+        if (x < margin or y < margin or
+            x + w > imgw - margin or
+            y + h > imgh - margin):
+            return None
+        
         # Draw bounding rectangle
         cv2.rectangle(
             frame,
@@ -337,9 +343,8 @@ def detectMarker(self, frame):
         # now the quodrotor knows
         # where it needs to go to get 
         # red box back into center
-        return transform(self, 
-            x, y, w, h, imgw, imgh
-        ), w
+        # also includes center coordinates
+        return transform(self, x, y, w, h, imgw, imgh), w, (int(x + w / 2), int(y + h / 2))
 
     return None
 # ----------------------------------------------------------
@@ -372,6 +377,68 @@ def estimateAppleDistance(self, applePixelWidth):
     return (
         self.appleDiameter * self.focalLength
     ) / applePixelWidth
+# ----------------------------------------------------------
+def mapApple(self, appleWorldPosition):
+    import numpy as np
+
+    self.tempAppleReadings.append(np.array(appleWorldPosition))
+
+    if len(self.tempAppleReadings) > 5:
+        self.tempAppleReadings.pop(0)
+
+    # Only add apple if 5 readings are consistent
+    if len(self.tempAppleReadings) == 5:
+        average = np.mean(self.tempAppleReadings, axis=0)
+        
+        if all(np.linalg.norm(pos - average) < 0.02
+               for pos in self.tempAppleReadings):
+
+            if not any(np.linalg.norm(average - pos) < 0.1
+                       for pos in self.applePositions):
+
+                self.applePositions.append(average.copy())
+                print("Apple added to map:", average)
+# ----------------------------------------------------------
+def compareEstimateToActual(self, appleWorldPosition):
+    apple = self.sim.getObject('/Apple')
+    actualPosition = self.sim.getObjectPosition(
+        apple,
+        self.sim.handle_world
+    )
+    print("Estimated apple position:", appleWorldPosition)
+    print("Actual apple position:", actualPosition)
+# ----------------------------------------------------------
+def TransformAppleFromRobotToWorldPos(self, appleRobotPosition):
+    import numpy as np
+    robotMatrix = self.sim.getObjectMatrix(self.robot, self.sim.handle_world)
+    robotMatrix = np.array(robotMatrix).reshape(3, 4)
+    rotation = robotMatrix[:, :3]
+    translation = robotMatrix[:, 3]
+    appleWorldPosition = rotation @ appleRobotPosition + translation
+
+    return appleWorldPosition
+# ----------------------------------------------------------
+def TransformApplePosFromCameraToRobot(self, appleCameraPosition):
+    import numpy as np
+    # get camera transformation matrix relative to the robot
+    cameraMatrix = self.sim.getObjectMatrix(self.camera, self.robot)
+    cameraMatrix = np.array(cameraMatrix).reshape(3, 4)
+    # how is the camera oriented towards the robot
+    rotation = cameraMatrix[:, :3]
+    # where is the camera relative to the robot
+    translation = cameraMatrix[:, 3]
+    # apples 3d position in meteres relative to the robot
+    appleRobotPosition = rotation @ appleCameraPosition + translation
+    return appleRobotPosition
+# ----------------------------------------------------------
+def Position3DappleRelToCamera(appleDepth, localDirection):
+    import numpy as np
+    appleCameraPosition = np.array([
+            localDirection[0] / localDirection[2] * appleDepth,
+            localDirection[1] / localDirection[2] * appleDepth,
+            appleDepth
+        ])
+    return appleCameraPosition
 # ----------------------------------------------------------
 def averageAppleRadius(self):
     apple = self.sim.getObject('/Apple')
@@ -418,6 +485,22 @@ def find3dVector(self, boxCenter):
 
     # how to get distance at this point?
     return worldDirection, direction
+# ----------------------------------------------------------
+def getCameraDepth(self):
+    import numpy as np
+    # depth is a flat array of depth data per pixel (32bit floats)
+    depth, resolution = self.sim.getVisionSensorDepth(
+        self.camera, 1
+    )
+    # turn depth into a 2d array where we can access depth data
+    # via x y coords e.g. depth[320, 200] = 1.7 meters
+    depth = np.frombuffer(depth, dtype=np.float32)
+    depth = depth.reshape(resolution[1], resolution[0])
+
+    print("Depth type:", type(depth))
+    print("Resolution:", resolution)
+
+    return depth
 # ----------------------------------------------------------
 def tiltCameraX(self, degrees):
     import math

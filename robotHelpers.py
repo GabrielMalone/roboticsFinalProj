@@ -8,12 +8,12 @@ def moveTowardsAprilTag(self, corners, image):
     # keep moving towards it
     # tagsize of 150-200 seems decent
     if tagWidth(self, corners) < self.min_distance_to_april_tag:
-        print("tag widh: ", tagWidth(self, corners))
+        # print("tag widh: ", tagWidth(self, corners))
         moveSelf(self, v=0.2, heading_error=heading_error)
     else:
         # stop
         self.april_tag_reached = True
-        print("APRIL TAG REACHED")
+        # print("APRIL TAG REACHED")
         moveSelf(self, v=0, heading_error=0)
 # ---------------------------------------------------------
 def moveAroundTree(self):
@@ -23,10 +23,10 @@ def moveAroundTree(self):
     detected8, d8 = sensors[1]
     # Lost contact with tree
     if not detected7 or not detected8:
-        print("LOST SENSOR CONTACT")
+        # print("LOST SENSOR CONTACT")
         moveSelf(self, 0.1, self.lastTreeOmega)
         return
-    print("sensor data: ", d7, d8)
+    # print("sensor data: ", d7, d8)
     # compare front and rear distances
     error = d7 - d8
     # this will be our constant clockwise rotation
@@ -164,10 +164,10 @@ def scanTreeAlignment(self):
             self.bestHeading = self.sim.getObjectOrientation(
                 self.robot, -1
             )[2]
-            print(
-                f"Best alignment: {difference:.4f} m | "
-                f"Heading: {self.bestHeading:.3f} rad"
-            )
+            # print(
+            #     f"Best alignment: {difference:.4f} m | "
+            #     f"Heading: {self.bestHeading:.3f} rad"
+            # )
 # ---------------------------------------------------------
 # idea here is that we get close to tree with april tag
 # then we do a 360 spin to see which heading the robot 
@@ -204,7 +204,8 @@ def readUltrasonicSensors(self, side=""):
             self.sim.readProximitySensor(sensor)
         )
         if result:
-            print(f"Sensor {i}: {distance:.2f} m")
+            pass
+             #print(f"Sensor {i}: {distance:.2f} m")
 
 
 
@@ -310,42 +311,50 @@ def detectMarker(self, frame):
 
         # we assume the largest countour area
         # is the box we are looking for
+        boxes = []
         c = max(contours, key=cv2.contourArea)
 
-        # simplified shape of the contour
-        # we detected
-        x, y, w, h = cv2.boundingRect(c)
+        for c in contours:
 
-        margin = 10
-        if (x < margin or y < margin or
-            x + w > imgw - margin or
-            y + h > imgh - margin):
-            return None
-        
-        # Draw bounding rectangle
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + w, y + h),
-            (0, 255, 0),
-            2
-        )
+            # simplified shape of the contour
+            # we detected
+            x, y, w, h = cv2.boundingRect(c)
+   
+            margin = 10
+            if (x < margin or y < margin or
+                x + w > imgw - margin or
+                y + h > imgh - margin):
+                return None
+            
+            # Draw bounding rectangle
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2
+            )
 
-        # Draw arrow toward image center
-        cv2.arrowedLine(
-            frame,
-            (x + w // 2, y + h // 2),
-            (imgw // 2, imgh // 2),
-            (0, 0, 255),
-            2
-        )
-        # ok got this
-        # now the quodrotor knows
-        # where it needs to go to get 
-        # red box back into center
-        # also includes center coordinates
-        return transform(self, x, y, w, h, imgw, imgh), w, (int(x + w / 2), int(y + h / 2))
-
+            # Draw arrow toward image center
+            cv2.arrowedLine(
+                frame,
+                (x + w // 2, y + h // 2),
+                (imgw // 2, imgh // 2),
+                (0, 0, 255),
+                2
+            )
+            # ok got this
+            # now the quodrotor knows
+            # where it needs to go to get 
+            # red box back into center
+            # also includes center coordinates
+            boxes.append((
+                transform(self, x, y, w, h, imgw, imgh),
+                w,
+                (int(x + w / 2), int(y + h / 2)),
+                (x, y, w, h)
+            ))
+        return boxes
     return None
 # ----------------------------------------------------------
 def getCameraImage(self):
@@ -381,22 +390,75 @@ def estimateAppleDistance(self, applePixelWidth):
 def mapApple(self, appleWorldPosition):
     import numpy as np
 
-    self.tempAppleReadings.append(np.array(appleWorldPosition))
+    appleWorldPosition = np.array(appleWorldPosition)
 
-    if len(self.tempAppleReadings) > 5:
-        self.tempAppleReadings.pop(0)
+    # Discard old, unconfirmed readings
+#     self.tempAppleReadings = [
+#         group for group in self.tempAppleReadings
+#         if len(group) >= 2
+#         or np.linalg.norm(appleWorldPosition - group[-1]) < 0.15
+# ]
 
-    # Only add apple if 5 readings are consistent
-    if len(self.tempAppleReadings) == 5:
-        average = np.mean(self.tempAppleReadings, axis=0)
-        
-        if all(np.linalg.norm(pos - average) < 0.02
-               for pos in self.tempAppleReadings):
+    # Find the group this apple belongs to
+    for group in self.tempAppleReadings:
+        average = np.mean(group, axis=0)
 
-            if not any(np.linalg.norm(average - pos) < 0.1
+        if np.linalg.norm(appleWorldPosition - average) < 0.03:
+            group.append(appleWorldPosition)
+            break
+    else:
+        self.tempAppleReadings.append([appleWorldPosition])
+
+    # Check each apple's readings independently
+    for group in self.tempAppleReadings:
+        if len(group) < 5:
+            continue
+
+        readings = group[-5:]
+        average = np.mean(readings, axis=0)
+
+        # Only map apples with 5 consistent readings
+        if all(np.linalg.norm(pos - average) < 0.02 for pos in readings):
+
+            # Don't add an apple that's already mapped
+            if not any(np.linalg.norm(average - pos) < 0.06
                        for pos in self.applePositions):
 
                 self.applePositions.append(average.copy())
+
+                # Create a sphere at the mapped position
+                marker = self.sim.addDrawingObject(
+                    self.sim.drawing_lines,
+                    3,
+                    0,
+                    -1,
+                    12,
+                    [0, 1, 0]
+                )
+                self.appleMarkers.append(marker)
+
+                x, y, z = average
+                s = 0.1
+
+                corners = [
+                    (x-s, y-s, z-s), (x+s, y-s, z-s),
+                    (x+s, y+s, z-s), (x-s, y+s, z-s),
+                    (x-s, y-s, z+s), (x+s, y-s, z+s),
+                    (x+s, y+s, z+s), (x-s, y+s, z+s)
+                ]
+
+                edges = [
+                    (0,1), (1,2), (2,3), (3,0),
+                    (4,5), (5,6), (6,7), (7,4),
+                    (0,4), (1,5), (2,6), (3,7)
+                ]
+
+                for a, b in edges:
+                    self.sim.addDrawingObjectItem(
+                        marker,
+                        list(corners[a]) + list(corners[b])
+                    )
+
                 print("Apple added to map:", average)
 # ----------------------------------------------------------
 def compareEstimateToActual(self, appleWorldPosition):
@@ -450,6 +512,14 @@ def averageAppleRadius(self):
     )
     return (maxX - minX) / 2
 # ----------------------------------------------------------
+def appleWidthRatio(self, appleDepth, applePixelWidth):
+    expectedWidth = (
+            self.appleDiameter * self.focalLength
+        ) / appleDepth
+    widthRatio = applePixelWidth / expectedWidth
+    # print(f"Expected: {expectedWidth:.1f} px")
+    return widthRatio
+# ----------------------------------------------------------
 def find3dVector(self, boxCenter):
     import numpy as np
     # The apple appears halfway between the center and right edge of my image (x=0.5).
@@ -475,7 +545,7 @@ def find3dVector(self, boxCenter):
         self.camera,
         self.sim.handle_world
     )
-    print(f"cameraMatrix: {cameraMatrix}")
+    # print(f"cameraMatrix: {cameraMatrix}")
     matrix = np.array(cameraMatrix).reshape(3, 4)
     rotation = matrix[:, :3]
     # @ = matrix multiplication in numpy
@@ -496,9 +566,8 @@ def getCameraDepth(self):
     # via x y coords e.g. depth[320, 200] = 1.7 meters
     depth = np.frombuffer(depth, dtype=np.float32)
     depth = depth.reshape(resolution[1], resolution[0])
-
-    print("Depth type:", type(depth))
-    print("Resolution:", resolution)
+    # print("Depth type:", type(depth))
+    # print("Resolution:", resolution)
 
     return depth
 # ----------------------------------------------------------
@@ -561,3 +630,77 @@ def detectAprilTagHeadingError(self, tagCenterX, image):
 
     return headingError  
 # ---------------------------------------------------------
+def removeMergedApple(self, mergedWorldPosition):
+    import numpy as np
+    mergedWorldPosition = np.array(mergedWorldPosition)
+
+    for i in range(len(self.applePositions) - 1, -1, -1):
+        if np.linalg.norm(self.applePositions[i] - mergedWorldPosition) < 0.06:
+            self.applePositions.pop(i)
+
+            self.sim.removeDrawingObject(self.appleMarkers.pop(i))
+
+            print("Removed merged apple from map")
+# ---------------------------------------------------------
+def mapMultipleApples(self, image, depthImage, x, y, w, h, estimatedAppleCount):
+    import numpy as np
+    import cv2
+    sectionWidth = w / estimatedAppleCount
+
+    for i in range(estimatedAppleCount):
+
+        sectionLeft = int(x + i * sectionWidth)
+        sectionRight = int(x + (i + 1) * sectionWidth)
+
+        section = image[y:y+h, sectionLeft:sectionRight]
+        hsv = cv2.cvtColor(section, cv2.COLOR_BGR2HSV)
+
+        mask = cv2.inRange(hsv, (0, 100, 100), (10, 255, 255))
+        mask |= cv2.inRange(hsv, (160, 100, 100), (180, 255, 255))
+
+        ys, xs = np.where(mask > 0)
+
+        if len(xs) == 0:
+            continue
+
+        appleCenterX = sectionLeft + int(np.median(xs))
+        appleCenterY = y + int(np.median(ys))
+
+        print(f"Apple {i + 1} center: ({appleCenterX}, {appleCenterY})")
+
+        # Normalize individual apple center
+        normalizedX = (appleCenterX / self.imageWidth) * 2 - 1
+        normalizedY = (appleCenterY / depthImage.shape[0]) * 2 - 1
+
+        appleBoxCenter = (normalizedX, normalizedY)
+
+        # Get depth for individual apple
+        appleDepth = depthImage[appleCenterY, appleCenterX] + self.appleRadius
+
+        print("Depth:", appleDepth, "Pixel BGR:", image[appleCenterY, appleCenterX])
+        print(f"Apple {i+1} depth: {appleDepth:.3f}")
+
+        if appleDepth > 2.0:
+            continue
+
+        # Calculate 3D direction
+        worldDirection, localDirection = find3dVector(
+            self, appleBoxCenter
+        )
+
+        # Camera -> Robot -> World
+        appleCameraPosition = Position3DappleRelToCamera(
+            appleDepth, localDirection
+        )
+
+        appleRobotPosition = TransformApplePosFromCameraToRobot(
+            self, appleCameraPosition
+        )
+
+        appleWorldPosition = TransformAppleFromRobotToWorldPos(
+            self, appleRobotPosition
+        )
+
+        print(f"Apple {i + 1} world position: {appleWorldPosition}")
+
+        mapApple(self, appleWorldPosition)

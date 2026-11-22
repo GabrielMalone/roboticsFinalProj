@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import math
 import robotHelpers
+import time
 # --------------------------------------------------------------
 # apple finding robot --- hopefully
 # --------------------------------------------------------------
@@ -31,6 +32,8 @@ class myRobot():
         self.L              = robotHelpers.getWheelLength(self)
         self.heading_gain   = 1.0
         self.angular_gain   = 1.2
+        self.appleScanUntil = 0
+        self.appleScanCooldownUntil = 0
         # tree calibration stuff
         self.bestDifference = float("inf")
         self.bestHeading = None
@@ -46,6 +49,7 @@ class myRobot():
         # can track apple coordinates here
         self.applePositions = []
         self.tempAppleReadings = []
+        self.appleMarkers = []
         # camera stuff
         self.fov = self.sim.getObjectFloatParam(
             self.camera,
@@ -86,9 +90,19 @@ class myRobot():
     
     # ---------------------------------------------------------- 
     def start(self):
+        self.sim.stopSimulation()
+
+        while self.sim.getSimulationState() != self.sim.simulation_stopped:
+            time.sleep(0.1)
+
         self.sim.startSimulation()
+    # ---------------------------------------------------------- 
     def stop(self):
-          self.sim.stopSimulation()
+        for marker in self.appleMarkers:
+            self.sim.removeDrawingObject(marker)
+
+        self.appleMarkers.clear()
+        self.sim.stopSimulation()
     # ----------------------------------------------------------
     def runSelf(self, ATD):
         # run camera continuously
@@ -111,7 +125,7 @@ class myRobot():
             # and look for tag
             # --------------------------------------------------
             elif not self.april_tag_reached:
-                print("just going in circles!")
+                # print("just going in circles!")
                 robotHelpers.moveSelf(self, v=0, heading_error=0.2)
             # --------------------------------------------------
             # tree / robot alignment 
@@ -121,39 +135,75 @@ class myRobot():
             # --------------------------------------------------
             # once aligned, we can move around the tree
             # --------------------------------------------------
+            # once aligned, we can move around the tree
             if self.treeAligned:
-                robotHelpers.moveAroundTree(self)
+                if time.monotonic() < self.appleScanUntil:
+                    robotHelpers.moveSelf(self, v=0, heading_error=0)
+                else:
+                    robotHelpers.moveAroundTree(self)
+
                 if not self.cameraTilted:
                     robotHelpers.tiltCameraX(self, 0)
                     self.cameraTilted = True
-                # --------------------------------------------------
-                # now detect apple and estimate distance 
-                # --------------------------------------------------
-                detection = robotHelpers.detectMarker(self, image)
-                if detection is not None:
 
-                    # kinect depth info
-                    boxCenter, applePixelWidth, (centerX, centerY) = detection
-                    # all the depth info the camera sees
-                    depthImage = robotHelpers.getCameraDepth(self)
-                    # depth at center of detected apple
+                # --------------------------------------------------
+                # Detect apples and estimate positions
+                # --------------------------------------------------
+                detections = robotHelpers.detectMarker(self, image) or []
+
+                depthImage = robotHelpers.getCameraDepth(self)
+
+                for boxCenter, applePixelWidth, (centerX, centerY), (x, y, w, h) in detections:
+
+                    # Depth at center of detected object
                     appleDepth = depthImage[centerY, centerX]
-                    # adjust for radius of typical apple
                     appleDepth += self.appleRadius
-                    # apple out of view, not really detecting apple 
-                    if appleDepth > 2.0:
-                        return None
-                    worldDirection, localDirection = robotHelpers.find3dVector(self, boxCenter)
-                    # at this point have 3d position of apple relative to camera in meters 
-                    # just need to do a transformation from camera to robot then robot to world
-                    appleCamerPosition = robotHelpers.Position3DappleRelToCamera(appleDepth, localDirection)
-                    appleRobotPosition = robotHelpers.TransformApplePosFromCameraToRobot(self, appleCamerPosition)
-                    appleWorldPosition = robotHelpers.TransformAppleFromRobotToWorldPos(self, appleRobotPosition)
-                    #robotHelpers.compareEstimateToActual(self, appleWorldPosition)
-                    robotHelpers.mapApple(self, appleWorldPosition)
 
-                    print(self.applePositions)
-        
+                    # Skip objects outside our depth range
+                    if appleDepth > 2.0:
+                        continue
+
+                    # Estimate how many apples are in the detection
+                    widthRatio = robotHelpers.appleWidthRatio(
+                        self, appleDepth, applePixelWidth
+                    )
+
+                    estimatedAppleCount = max(1, round(widthRatio))
+                    
+                    now = time.monotonic()
+                    if (estimatedAppleCount > 1 or len(detections) > 1) and now >= self.appleScanCooldownUntil:
+                        self.appleScanUntil = now + 2.0
+                        self.appleScanCooldownUntil = now + 30.0
+
+                    print(f"Estimated apples in detection: {estimatedAppleCount}")
+
+                    # --------------------------------------------------
+                    # Multiple apples detected: split bounding box
+                    # --------------------------------------------------
+                    if estimatedAppleCount > 1:
+                        robotHelpers.mapMultipleApples(
+                            self, image, depthImage, x, y, w, h, estimatedAppleCount
+                        )
+                        # Don't map the original merged detection
+                        continue
+                    # --------------------------------------------------
+                    # Single apple detected
+                    # --------------------------------------------------
+                    worldDirection, localDirection = robotHelpers.find3dVector(
+                        self, boxCenter
+                    )
+                    appleCameraPosition = robotHelpers.Position3DappleRelToCamera(
+                        appleDepth, localDirection
+                    )
+                    appleRobotPosition = robotHelpers.TransformApplePosFromCameraToRobot(
+                        self, appleCameraPosition
+                    )
+                    appleWorldPosition = robotHelpers.TransformAppleFromRobotToWorldPos(
+                        self, appleRobotPosition
+                    )
+                    robotHelpers.mapApple(self, appleWorldPosition)
+                print(f"num apples detected: {len(self.applePositions)}")
+
             cv2.imshow("robot camera", cv2.flip(image, 1))
             # --------------------------------------------------
             # keyborad input stuff

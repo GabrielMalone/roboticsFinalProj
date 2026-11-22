@@ -171,9 +171,9 @@ class myRobot():
                     estimatedAppleCount = max(1, round(widthRatio))
                     
                     now = time.monotonic()
-                    if (estimatedAppleCount > 1 or len(detections) > 1) and now >= self.appleScanCooldownUntil:
+                    if now >= self.appleScanCooldownUntil:
                         self.appleScanUntil = now + 2.0
-                        self.appleScanCooldownUntil = now + 30.0
+                        self.appleScanCooldownUntil = now + 5.0
 
                     print(f"Estimated apples in detection: {estimatedAppleCount}")
 
@@ -203,6 +203,7 @@ class myRobot():
                     )
                     robotHelpers.mapApple(self, appleWorldPosition)
                 print(f"num apples detected: {len(self.applePositions)}")
+                print(f"Positions: {len(self.applePositions)} | Markers: {len(self.appleMarkers)}")
 
             cv2.imshow("robot camera", cv2.flip(image, 1))
             # --------------------------------------------------

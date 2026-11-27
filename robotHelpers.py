@@ -324,25 +324,25 @@ def detectMarker(self, frame):
             if (x < margin or y < margin or
                 x + w > imgw - margin or
                 y + h > imgh - margin):
-                return None
+                continue
             
             # Draw bounding rectangle
             cv2.rectangle(
                 frame,
                 (x, y),
                 (x + w, y + h),
-                (0, 255, 0),
+                (255, 255, 0),
                 2
             )
 
             # Draw arrow toward image center
-            cv2.arrowedLine(
-                frame,
-                (x + w // 2, y + h // 2),
-                (imgw // 2, imgh // 2),
-                (0, 0, 255),
-                2
-            )
+            # cv2.arrowedLine(
+            #     frame,
+            #     (x + w // 2, y + h // 2),
+            #     (imgw // 2, imgh // 2),
+            #     (0, 0, 255),
+            #     2
+            # )
             # ok got this
             # now the quodrotor knows
             # where it needs to go to get 
@@ -390,76 +390,231 @@ def estimateAppleDistance(self, applePixelWidth):
 def mapApple(self, appleWorldPosition):
     import numpy as np
 
+    # --------------------------------------------------
+    # MAPPING THRESHOLDS
+    # --------------------------------------------------
+
+    groupingDistance = 0.05
+
+    # Requires more distinct viewpoints before mapping.
+    minReadings = 4
+    # Requires stronger evidence for potentially duplicate apples.
+    ambiguousReadings = 5
+    maxReadings = max(minReadings, ambiguousReadings)
+
+    readingTolerance = 0.02
+    # Treats nearby detections as existing apples rather than new ones.
+    refinementDistance = 0.05
+    minRefinementDistance = 0.01
+    # Makes it harder to register another apple near an existing one.
+    ambiguousDistance = 0.06
+    # Requires more consistent position estimates.
+    ambiguousTolerance = 0.015
+
+    accuracyThreshold = 0.05
+    accurateColor = [1, 1, 0]
+    inaccurateColor = [0.5, 0, 1]
+    boxLineWidth = 3
+
+    # --------------------------------------------------
+    # CACHE ACTUAL APPLE POSITIONS
+    # --------------------------------------------------
+
     appleWorldPosition = np.array(appleWorldPosition)
 
-    # Discard old, unconfirmed readings
-#     self.tempAppleReadings = [
-#         group for group in self.tempAppleReadings
-#         if len(group) >= 2
-#         or np.linalg.norm(appleWorldPosition - group[-1]) < 0.15
-# ]
+    if not hasattr(self, "actualApplePositions"):
+        self.actualApplePositions = []
 
-    # Find the group this apple belongs to
+        for obj in self.sim.getObjectsInTree(self.sim.handle_scene):
+            name = self.sim.getObjectAlias(obj)
+
+            if name.lower().startswith("apple"):
+                self.actualApplePositions.append(
+                    np.array(self.sim.getObjectPosition(
+                        obj, self.sim.handle_world
+                    ))
+                )
+
+    # --------------------------------------------------
+    # ONLY COLLECT READINGS WHILE SCANNING
+    # --------------------------------------------------
+
+    if self.scanState != "scanning":
+        return
+
+    viewpointID = (self.scanCycle, self.scanViewpoint)
+
+    # --------------------------------------------------
+    # GROUP NEARBY READINGS BY VIEWPOINT
+    # --------------------------------------------------
+
     for group in self.tempAppleReadings:
-        average = np.mean(group, axis=0)
 
-        if np.linalg.norm(appleWorldPosition - average) < 0.03:
-            group.append(appleWorldPosition)
+        average = np.mean(
+            [np.mean(samples, axis=0) for samples in group.values()],
+            axis=0
+        )
+
+        if np.linalg.norm(appleWorldPosition - average) < groupingDistance:
+
+            group.setdefault(viewpointID, []).append(appleWorldPosition)
+
+            if len(group) > maxReadings:
+                del group[next(iter(group))]
+
             break
+
     else:
-        self.tempAppleReadings.append([appleWorldPosition])
+        self.tempAppleReadings.append({
+            viewpointID: [appleWorldPosition]
+        })
+        return
 
-    # Check each apple's readings independently
-    for group in self.tempAppleReadings:
-        if len(group) < 5:
-            continue
+    # --------------------------------------------------
+    # REQUIRE MULTIPLE DISTINCT VIEWPOINTS
+    # --------------------------------------------------
 
-        readings = group[-5:]
+    if len(group) < minReadings:
+        return
+
+    viewpointAverages = [
+        np.mean(samples, axis=0)
+        for samples in group.values()
+    ]
+
+    readings = viewpointAverages[-minReadings:]
+    average = np.mean(readings, axis=0)
+
+    if not all(
+        np.linalg.norm(pos - average) < readingTolerance
+        for pos in readings
+    ):
+        return
+
+    # --------------------------------------------------
+    # FIND NEAREST MAPPED APPLE
+    # --------------------------------------------------
+
+    nearestIndex = None
+    nearestDistance = float("inf")
+
+    for i, pos in enumerate(self.applePositions):
+        distance = np.linalg.norm(average - pos)
+
+        if distance < nearestDistance:
+            nearestDistance = distance
+            nearestIndex = i
+
+    updating = False
+
+    # --------------------------------------------------
+    # REFINE EXISTING APPLE
+    # --------------------------------------------------
+
+    if nearestDistance < refinementDistance:
+
+        if nearestDistance < minRefinementDistance:
+            return
+
+        average = np.mean(
+            [self.applePositions[nearestIndex], average],
+            axis=0
+        )
+
+        updating = True
+
+    # --------------------------------------------------
+    # HANDLE AMBIGUOUS DETECTIONS
+    # --------------------------------------------------
+
+    elif nearestDistance < ambiguousDistance:
+
+        if len(group) < ambiguousReadings:
+            return
+
+        readings = viewpointAverages[-ambiguousReadings:]
         average = np.mean(readings, axis=0)
 
-        # Only map apples with 5 consistent readings
-        if all(np.linalg.norm(pos - average) < 0.02 for pos in readings):
+        if not all(
+            np.linalg.norm(pos - average) < ambiguousTolerance
+            for pos in readings
+        ):
+            return
 
-            # Don't add an apple that's already mapped
-            if not any(np.linalg.norm(average - pos) < 0.06
-                       for pos in self.applePositions):
+    # --------------------------------------------------
+    # EVALUATE ACCURACY (VISUAL FEEDBACK ONLY)
+    # --------------------------------------------------
 
-                self.applePositions.append(average.copy())
+    error = min(
+        (np.linalg.norm(average - pos)
+         for pos in self.actualApplePositions),
+        default=float("inf")
+    )
 
-                # Create a sphere at the mapped position
-                marker = self.sim.addDrawingObject(
-                    self.sim.drawing_lines,
-                    3,
-                    0,
-                    -1,
-                    12,
-                    [0, 1, 0]
-                )
-                self.appleMarkers.append(marker)
+    color = (
+        accurateColor if error < accuracyThreshold
+        else inaccurateColor
+    )
 
-                x, y, z = average
-                s = 0.1
+    if updating:
+        self.sim.removeDrawingObject(
+            self.appleMarkers[nearestIndex]
+        )
 
-                corners = [
-                    (x-s, y-s, z-s), (x+s, y-s, z-s),
-                    (x+s, y+s, z-s), (x-s, y+s, z-s),
-                    (x-s, y-s, z+s), (x+s, y-s, z+s),
-                    (x+s, y+s, z+s), (x-s, y+s, z+s)
-                ]
+    # --------------------------------------------------
+    # CREATE BOUNDING BOX
+    # --------------------------------------------------
 
-                edges = [
-                    (0,1), (1,2), (2,3), (3,0),
-                    (4,5), (5,6), (6,7), (7,4),
-                    (0,4), (1,5), (2,6), (3,7)
-                ]
+    x, y, z = average
+    s = self.appleRadius
 
-                for a, b in edges:
-                    self.sim.addDrawingObjectItem(
-                        marker,
-                        list(corners[a]) + list(corners[b])
-                    )
+    corners = [
+        (x-s, y-s, z-s), (x+s, y-s, z-s),
+        (x+s, y+s, z-s), (x-s, y+s, z-s),
+        (x-s, y-s, z+s), (x+s, y-s, z+s),
+        (x+s, y+s, z+s), (x-s, y+s, z+s)
+    ]
 
-                print("Apple added to map:", average)
+    edges = [
+        (0,1), (1,2), (2,3), (3,0),
+        (4,5), (5,6), (6,7), (7,4),
+        (0,4), (1,5), (2,6), (3,7)
+    ]
+
+    marker = self.sim.addDrawingObject(
+        self.sim.drawing_lines,
+        boxLineWidth,
+        0,
+        -1,
+        len(edges),
+        color
+    )
+
+    for a, b in edges:
+        self.sim.addDrawingObjectItem(
+            marker,
+            list(corners[a]) + list(corners[b])
+        )
+
+    # --------------------------------------------------
+    # UPDATE APPLE MAP
+    # --------------------------------------------------
+
+    if updating:
+        self.applePositions[nearestIndex] = average
+        self.appleMarkers[nearestIndex] = marker
+
+        print("Apple position refined:", average)
+
+    else:
+        self.applePositions.append(average)
+        self.appleMarkers.append(marker)
+
+        print("Apple added to map:", average)
+
+    # Require fresh viewpoint readings before refinement.
+    group.clear()
+    group[viewpointID] = [appleWorldPosition]
 # ----------------------------------------------------------
 def compareEstimateToActual(self, appleWorldPosition):
     apple = self.sim.getObject('/Apple')
@@ -675,7 +830,9 @@ def mapMultipleApples(self, image, depthImage, x, y, w, h, estimatedAppleCount):
         appleBoxCenter = (normalizedX, normalizedY)
 
         # Get depth for individual apple
-        appleDepth = depthImage[appleCenterY, appleCenterX] + self.appleRadius
+        appleDepth = np.median(
+            depthImage[y + ys, sectionLeft + xs]
+        ) + self.appleRadius
 
         print("Depth:", appleDepth, "Pixel BGR:", image[appleCenterY, appleCenterX])
         print(f"Apple {i+1} depth: {appleDepth:.3f}")

@@ -1,40 +1,39 @@
-# lets us talk to Coppelia Sim 
-# https://manual.coppeliarobotics.com/en/zmqRemoteApiOverview.htm
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-# python interface to OpenCV (Open Source Computer Vision Library)
-# https://docs.opencv.org/5.0/index.html
 import cv2
-# will use this to detect AprilTags
-# apples
-# track bojects
-# estimate object positions
 import numpy as np
 import math
 import robotHelpers
 import time
-# --------------------------------------------------------------
-# apple finding robot --- hopefully
-# --------------------------------------------------------------
+
+
 class myRobot():
-    # ----------------------------------------------------------
+
     def __init__(self):
-        # connect to CoppeliaSim
-        self.client         = RemoteAPIClient()
-        # requeset access to the sim api and its methods 
-        self.sim            = self.client.require('sim')
-        # get robot components
-        self.robot          = self.sim.getObject('/PioneerP3DX')
-        self.camera         = self.sim.getObject('/PioneerP3DX/visionSensor')
-        # driving stuff
-        self.left_motor     = self.sim.getObject('/PioneerP3DX/leftMotor')
-        self.right_motor    = self.sim.getObject('/PioneerP3DX/rightMotor')
-        self.wheel_radius   = robotHelpers.getWheelRadius(self)
-        self.L              = robotHelpers.getWheelLength(self)
-        self.heading_gain   = 1.0
-        self.angular_gain   = 1.2
-        self.appleScanUntil = 0
-        self.appleScanCooldownUntil = 0
-        # tree calibration stuff
+
+        self.client = RemoteAPIClient()
+        self.sim = self.client.require('sim')
+
+        self.robot = self.sim.getObject('/PioneerP3DX')
+        self.camera = self.sim.getObject('/PioneerP3DX/visionSensor')
+
+        # Driving
+        self.left_motor = self.sim.getObject('/PioneerP3DX/leftMotor')
+        self.right_motor = self.sim.getObject('/PioneerP3DX/rightMotor')
+        self.wheel_radius = robotHelpers.getWheelRadius(self)
+        self.L = robotHelpers.getWheelLength(self)
+        self.heading_gain = 1.0
+        self.angular_gain = 1.2
+
+        # Multi-viewpoint scanning
+        self.scanState = "searching"
+        self.scanStateUntil = 0
+        self.scanViewpoint = 0
+        self.scanCycle = 0
+        self.maxScanViewpoints = 5
+        self.scanDuration = 1.0
+        self.repositionDuration = 0.5
+
+        # Tree calibration
         self.bestDifference = float("inf")
         self.bestHeading = None
         self.treeScanComplete = False
@@ -43,175 +42,336 @@ class myRobot():
         self.previousScanHeading = None
         self.scanRotation = 0.0
         self.lastTreeOmega = -0.12
-        # apple stuff
+
+        # Apple mapping
         self.appleRadius = robotHelpers.averageAppleRadius(self)
         self.appleDiameter = self.appleRadius * 2
-        # can track apple coordinates here
         self.applePositions = []
         self.tempAppleReadings = []
         self.appleMarkers = []
-        # camera stuff
+
+        # Camera
         self.fov = self.sim.getObjectFloatParam(
             self.camera,
             self.sim.visionfloatparam_perspective_angle
-            )
-        # ratio of sideways distance to forward distance
-        # at the edge of the camera's view
-        self.tanHalfFov = math.tan(self.fov/2)
-        # 1024 set in copelliasim
-        self.imageWidth = 1024
+        )
 
-        # two imaginary triangles, representing the same camera FOV.
-        #1 - World-space triangle: Extends 1 unit forward from the camera. 
-        # At that distance, the FOV is 1.155 units wide.
-        #2 - Image-plane triangle: Extends 887 pixel-units 
-        # forward from the camera. Its width is 1024 pixels.
-        # and it's just 1024 a simple question of 1024 = 1.15x
+        self.tanHalfFov = math.tan(self.fov / 2)
+        self.imageWidth = 1024
 
         self.focalLength = (
             self.imageWidth / (2 * math.tan(self.fov / 2))
         )
-        # other flags
+
+        # Navigation flags
         self.april_tag_reached = False
         self.moving_around_tree = False
         self.target_distance_to_tree = None
         self.cameraTilted = False
-        # actually the x and y top corner 
-        # length of april tag in pixels
         self.min_distance_to_april_tag = 250
 
-        # ulstrasonic sensors
+        # Ultrasonic sensors
         self.usensors = []
+
         for i in range(16):
             sensor = self.sim.getObject(
                 f"/PioneerP3DX/ultrasonicSensor[{i}]"
             )
             self.usensors.append(sensor)
-    
-    # ---------------------------------------------------------- 
+
+    # ----------------------------------------------------------
+    # START SIMULATION
+    # ----------------------------------------------------------
+
     def start(self):
+
         self.sim.stopSimulation()
 
         while self.sim.getSimulationState() != self.sim.simulation_stopped:
             time.sleep(0.1)
 
         self.sim.startSimulation()
-    # ---------------------------------------------------------- 
+
+    # ----------------------------------------------------------
+    # STOP SIMULATION
+    # ----------------------------------------------------------
+
     def stop(self):
+
         for marker in self.appleMarkers:
             self.sim.removeDrawingObject(marker)
 
         self.appleMarkers.clear()
         self.sim.stopSimulation()
+
     # ----------------------------------------------------------
+    # MAIN ROBOT LOOP
+    # ----------------------------------------------------------
+
     def runSelf(self, ATD):
-        # run camera continuously
+
         while True:
+
             # --------------------------------------------------
-            # image from CoppeliaSim
+            # CAPTURE CAMERA DATA
             # --------------------------------------------------
+
             image = robotHelpers.getCameraImage(self)
-            # any april tags in view?
+            depthImage = robotHelpers.getCameraDepth(self)
+
             corners, ids = ATD.detect(image)
-            # for visualization in the sim
-            image = cv2.aruco.drawDetectedMarkers(image, corners, ids)
+
             # --------------------------------------------------
-            # if april tag detected move towards it
+            # APPROACH APRIL TAG
             # --------------------------------------------------
-            if (corners and not self.april_tag_reached):
-                robotHelpers.moveTowardsAprilTag(self, corners, image)
-            # --------------------------------------------------
-            # otherwise spin in a circle
-            # and look for tag
-            # --------------------------------------------------
-            elif not self.april_tag_reached:
-                # print("just going in circles!")
-                robotHelpers.moveSelf(self, v=0, heading_error=0.2)
-            # --------------------------------------------------
-            # tree / robot alignment 
-            # --------------------------------------------------
-            if self.april_tag_reached and not self.treeAligned:
-                robotHelpers.calibrateRobotTangentToTree(self)
-            # --------------------------------------------------
-            # once aligned, we can move around the tree
-            # --------------------------------------------------
-            # once aligned, we can move around the tree
-            if self.treeAligned:
-                if time.monotonic() < self.appleScanUntil:
-                    robotHelpers.moveSelf(self, v=0, heading_error=0)
+
+            if not self.april_tag_reached:
+
+                if corners:
+                    robotHelpers.moveTowardsAprilTag(
+                        self, corners, image
+                    )
+
                 else:
-                    robotHelpers.moveAroundTree(self)
+                    robotHelpers.moveSelf(
+                        self, v=0, heading_error=0.2
+                    )
+
+            # --------------------------------------------------
+            # ALIGN WITH TREE
+            # --------------------------------------------------
+
+            elif not self.treeAligned:
+
+                robotHelpers.calibrateRobotTangentToTree(self)
+
+            # --------------------------------------------------
+            # TREE FOLLOWING AND APPLE SCANNING
+            # --------------------------------------------------
+
+            else:
 
                 if not self.cameraTilted:
                     robotHelpers.tiltCameraX(self, 0)
                     self.cameraTilted = True
 
-                # --------------------------------------------------
-                # Detect apples and estimate positions
-                # --------------------------------------------------
-                detections = robotHelpers.detectMarker(self, image) or []
+                now = time.monotonic()
 
-                depthImage = robotHelpers.getCameraDepth(self)
+                # ----------------------------------------------
+                # STATIONARY SCANNING
+                # ----------------------------------------------
 
-                for boxCenter, applePixelWidth, (centerX, centerY), (x, y, w, h) in detections:
+                if self.scanState == "scanning":
 
-                    # Depth at center of detected object
-                    appleDepth = depthImage[centerY, centerX]
-                    appleDepth += self.appleRadius
+                    robotHelpers.moveSelf(
+                        self, v=0, heading_error=0
+                    )
 
-                    # Skip objects outside our depth range
-                    if appleDepth > 2.0:
+                    if now >= self.scanStateUntil:
+
+                        self.scanViewpoint += 1
+
+                        if self.scanViewpoint >= self.maxScanViewpoints:
+
+                            self.scanState = "searching"
+
+                        else:
+
+                            self.scanState = "repositioning"
+                            self.scanStateUntil = (
+                                now + self.repositionDuration
+                            )
+
+                # ----------------------------------------------
+                # MOVE TO NEXT VIEWPOINT
+                # ----------------------------------------------
+
+                elif self.scanState == "repositioning":
+
+                    if now >= self.scanStateUntil:
+
+                        robotHelpers.moveSelf(
+                            self, v=0, heading_error=0
+                        )
+
+                        self.scanState = "scanning"
+                        self.scanStateUntil = (
+                            now + self.scanDuration
+                        )
+
+                    else:
+
+                        robotHelpers.moveAroundTree(self)
+
+                # ----------------------------------------------
+                # SEARCH FOR APPLES
+                # ----------------------------------------------
+
+                else:
+
+                    robotHelpers.moveAroundTree(self)
+
+                # ----------------------------------------------
+                # DETECT APPLES
+                # ----------------------------------------------
+
+                detections = (
+                    robotHelpers.detectMarker(self, image) or []
+                    if self.scanState != "repositioning"
+                    else []
+                )
+
+                for (
+                    boxCenter,
+                    applePixelWidth,
+                    (centerX, centerY),
+                    (x, y, w, h)
+                ) in detections:
+
+                    section = image[y:y+h, x:x+w]
+
+                    if section.size == 0:
                         continue
 
-                    # Estimate how many apples are in the detection
+                    hsv = cv2.cvtColor(
+                        section, cv2.COLOR_BGR2HSV
+                    )
+
+                    mask = cv2.inRange(
+                        hsv, (0, 100, 100), (10, 255, 255)
+                    )
+
+                    mask |= cv2.inRange(
+                        hsv, (160, 100, 100), (180, 255, 255)
+                    )
+
+                    ys, xs = np.where(mask > 0)
+
+                    if len(xs) == 0:
+                        continue
+
+                    # ------------------------------------------
+                    # ESTIMATE DEPTH
+                    # ------------------------------------------
+
+                    depthValues = depthImage[y + ys, x + xs]
+
+                    appleDepth = (
+                        np.median(depthValues) + self.appleRadius
+                    )
+
+                    if not np.isfinite(appleDepth):
+                        continue
+
+                    if appleDepth <= 0 or appleDepth > 4:
+                        continue
+
+                    # ------------------------------------------
+                    # ESTIMATE APPLE COUNT
+                    # ------------------------------------------
+
                     widthRatio = robotHelpers.appleWidthRatio(
                         self, appleDepth, applePixelWidth
                     )
 
-                    estimatedAppleCount = max(1, round(widthRatio))
-                    
-                    now = time.monotonic()
-                    if now >= self.appleScanCooldownUntil:
-                        self.appleScanUntil = now + 2.0
-                        self.appleScanCooldownUntil = now + 5.0
-
-                    print(f"Estimated apples in detection: {estimatedAppleCount}")
-
-                    # --------------------------------------------------
-                    # Multiple apples detected: split bounding box
-                    # --------------------------------------------------
-                    if estimatedAppleCount > 1:
-                        robotHelpers.mapMultipleApples(
-                            self, image, depthImage, x, y, w, h, estimatedAppleCount
-                        )
-                        # Don't map the original merged detection
+                    if widthRatio < 0.6:
                         continue
-                    # --------------------------------------------------
-                    # Single apple detected
-                    # --------------------------------------------------
-                    worldDirection, localDirection = robotHelpers.find3dVector(
-                        self, boxCenter
-                    )
-                    appleCameraPosition = robotHelpers.Position3DappleRelToCamera(
-                        appleDepth, localDirection
-                    )
-                    appleRobotPosition = robotHelpers.TransformApplePosFromCameraToRobot(
-                        self, appleCameraPosition
-                    )
-                    appleWorldPosition = robotHelpers.TransformAppleFromRobotToWorldPos(
-                        self, appleRobotPosition
-                    )
-                    robotHelpers.mapApple(self, appleWorldPosition)
-                print(f"num apples detected: {len(self.applePositions)}")
-                print(f"Positions: {len(self.applePositions)} | Markers: {len(self.appleMarkers)}")
 
-            cv2.imshow("robot camera", cv2.flip(image, 1))
+                    estimatedAppleCount = max(
+                        1, round(widthRatio)
+                    )
+
+                    # ------------------------------------------
+                    # BEGIN NEW SCANNING CYCLE
+                    # ------------------------------------------
+
+                    if self.scanState == "searching":
+
+                        self.scanState = "scanning"
+                        self.scanViewpoint = 0
+                        self.scanCycle += 1
+
+                        self.scanStateUntil = (
+                            time.monotonic() + self.scanDuration
+                        )
+
+                        robotHelpers.moveSelf(
+                            self, v=0, heading_error=0
+                        )
+
+                        print("Starting scan cycle:", self.scanCycle)
+
+                        # Wait for a fresh stationary camera image.
+                        break
+
+                    if self.scanState != "scanning":
+                        continue
+
+                    # ------------------------------------------
+                    # MULTIPLE APPLES
+                    # ------------------------------------------
+
+                    if estimatedAppleCount > 1:
+
+                        robotHelpers.mapMultipleApples(
+                            self,
+                            image,
+                            depthImage,
+                            x, y, w, h,
+                            estimatedAppleCount
+                        )
+
+                        continue
+
+                    # ------------------------------------------
+                    # SINGLE APPLE
+                    # ------------------------------------------
+
+                    worldDirection, localDirection = (
+                        robotHelpers.find3dVector(
+                            self, boxCenter
+                        )
+                    )
+
+                    appleCameraPosition = (
+                        robotHelpers.Position3DappleRelToCamera(
+                            appleDepth, localDirection
+                        )
+                    )
+
+                    appleRobotPosition = (
+                        robotHelpers.TransformApplePosFromCameraToRobot(
+                            self, appleCameraPosition
+                        )
+                    )
+
+                    appleWorldPosition = (
+                        robotHelpers.TransformAppleFromRobotToWorldPos(
+                            self, appleRobotPosition
+                        )
+                    )
+
+                    robotHelpers.mapApple(
+                        self, appleWorldPosition
+                    )
+
+                print(
+                    f"State: {self.scanState} | "
+                    f"Viewpoint: {self.scanViewpoint} | "
+                    f"Apples mapped: {len(self.applePositions)}"
+                )
+
             # --------------------------------------------------
-            # keyborad input stuff
+            # DISPLAY CAMERA
             # --------------------------------------------------
-            # give 30ms for a keyboard check
-            # and check for 'q' to quit
-            # with bitwise operation
-            
+
+            displayImage = cv2.aruco.drawDetectedMarkers(
+                image.copy(), corners, ids
+            )
+
+            cv2.imshow(
+                "robot camera", cv2.flip(displayImage, 1)
+            )
+
             if cv2.waitKey(30) & 0xFF == ord('q'):
                 break
